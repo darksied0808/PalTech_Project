@@ -271,3 +271,43 @@ class SqlServerWriter:
             
         finally:
             conn.close()
+
+    def execute_query(self, query: str, limit: int = 100) -> tuple[list[dict], list[str] | None, str | None]:
+        import decimal
+        from datetime import datetime, date
+        
+        conn = None
+        try:
+            conn = pyodbc.connect(self.config.connection_string())
+            cursor = conn.cursor()
+            cursor.execute(query)
+            
+            if cursor.description is None:
+                return [], None, "Query executed successfully, but returned no rows."
+                
+            col_names = [col_desc[0] for col_desc in cursor.description]
+            rows = cursor.fetchmany(limit)
+            
+            results = []
+            for row in rows:
+                row_dict = {}
+                for idx, col_name in enumerate(col_names):
+                    val = row[idx]
+                    if val is None:
+                        row_dict[col_name] = None
+                    elif isinstance(val, (int, float, str, bool)):
+                        row_dict[col_name] = val
+                    elif isinstance(val, (datetime, date)):
+                        row_dict[col_name] = val.isoformat()
+                    elif isinstance(val, decimal.Decimal):
+                        row_dict[col_name] = float(val)
+                    else:
+                        row_dict[col_name] = str(val)
+                results.append(row_dict)
+                
+            return results, col_names, None
+        except Exception as e:
+            return [], None, str(e)
+        finally:
+            if conn:
+                conn.close()

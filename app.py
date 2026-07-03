@@ -369,6 +369,30 @@ if st.session_state.generated_questions:
         with st.expander(f"{q.profiling_type}: {q.question[:80]}"):
             st.write(q.rationale or "_No rationale provided_")
             st.code(q.sql_query, language="sql")
+            
+            if sql_database:
+                st.markdown("---")
+                st.write("**Live Query Results (executed automatically on SQL Server):**")
+                cfg = SqlServerConfig(
+                    server=sql_server,
+                    database=sql_database,
+                    driver=sql_driver,
+                    username=sql_username or None,
+                    password=sql_password or None,
+                    table=profiling_table,
+                )
+                writer = SqlServerWriter(cfg)
+                rows, cols, err = writer.execute_query(q.sql_query, limit=100)
+                if err:
+                    st.error(f"Execution failed: {err}")
+                elif cols is not None:
+                    if rows:
+                        import pandas as pd
+                        df = pd.DataFrame(rows, columns=cols)
+                        st.dataframe(df, use_container_width=True)
+                        st.caption(f"Showing first {len(rows)} row(s).")
+                    else:
+                        st.info("Query returned 0 rows (no data quality issues detected).")
 
 if save_clicked and st.session_state.generated_questions:
     if not sql_database:

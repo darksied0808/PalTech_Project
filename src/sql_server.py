@@ -178,7 +178,7 @@ class SqlServerWriter:
         finally:
             conn.close()
 
-    def get_table_schema_and_sample(self, table_name: str) -> dict:
+    def get_table_schema_and_sample(self, table_name: str, include_samples: bool = True) -> dict:
         schema, table = parse_table_name(table_name)
         
         conn = pyodbc.connect(self.config.connection_string())
@@ -225,42 +225,43 @@ class SqlServerWriter:
             cursor.execute(f"SELECT COUNT(*) FROM [{schema}].[{table}]")
             row_count = cursor.fetchone()[0]
             
-            # Fetch sample rows (top 5) using explicit columns to handle spatial/binary types
-            select_cols = []
-            for c in columns:
-                c_name = c["column_name"]
-                c_type = c["data_type"].lower()
-                if c_type in ("geography", "geometry", "hierarchyid"):
-                    select_cols.append(f"[{c_name}].ToString() AS [{c_name}]")
-                elif c_type in ("image", "varbinary", "binary"):
-                    select_cols.append(f"'<binary>' AS [{c_name}]")
-                elif c_type == "xml":
-                    select_cols.append(f"CAST([{c_name}] AS NVARCHAR(MAX)) AS [{c_name}]")
-                else:
-                    select_cols.append(f"[{c_name}]")
-            
-            select_query = f"SELECT TOP 5 {', '.join(select_cols)} FROM [{schema}].[{table}]"
-            cursor.execute(select_query)
-            col_names = [col_desc[0] for col_desc in cursor.description]
             sample_rows = []
-            import decimal
-            from datetime import datetime, date
-            
-            for row in cursor.fetchall():
-                row_dict = {}
-                for col_idx, col_name in enumerate(col_names):
-                    val = row[col_idx]
-                    if val is None:
-                        row_dict[col_name] = None
-                    elif isinstance(val, (int, float, str, bool)):
-                        row_dict[col_name] = val
-                    elif isinstance(val, (datetime, date)):
-                        row_dict[col_name] = val.isoformat()
-                    elif isinstance(val, decimal.Decimal):
-                        row_dict[col_name] = float(val)
+            if include_samples:
+                # Fetch sample rows (top 5) using explicit columns to handle spatial/binary types
+                select_cols = []
+                for c in columns:
+                    c_name = c["column_name"]
+                    c_type = c["data_type"].lower()
+                    if c_type in ("geography", "geometry", "hierarchyid"):
+                        select_cols.append(f"[{c_name}].ToString() AS [{c_name}]")
+                    elif c_type in ("image", "varbinary", "binary"):
+                        select_cols.append(f"'<binary>' AS [{c_name}]")
+                    elif c_type == "xml":
+                        select_cols.append(f"CAST([{c_name}] AS NVARCHAR(MAX)) AS [{c_name}]")
                     else:
-                        row_dict[col_name] = str(val)
-                sample_rows.append(row_dict)
+                        select_cols.append(f"[{c_name}]")
+                
+                select_query = f"SELECT TOP 5 {', '.join(select_cols)} FROM [{schema}].[{table}]"
+                cursor.execute(select_query)
+                col_names = [col_desc[0] for col_desc in cursor.description]
+                import decimal
+                from datetime import datetime, date
+                
+                for row in cursor.fetchall():
+                    row_dict = {}
+                    for col_idx, col_name in enumerate(col_names):
+                        val = row[col_idx]
+                        if val is None:
+                            row_dict[col_name] = None
+                        elif isinstance(val, (int, float, str, bool)):
+                            row_dict[col_name] = val
+                        elif isinstance(val, (datetime, date)):
+                            row_dict[col_name] = val.isoformat()
+                        elif isinstance(val, decimal.Decimal):
+                            row_dict[col_name] = float(val)
+                        else:
+                            row_dict[col_name] = str(val)
+                    sample_rows.append(row_dict)
                 
             return {
                 "table_name": table_name,

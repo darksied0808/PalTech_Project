@@ -197,6 +197,12 @@ with col_upload:
                     default=tables_list[:3] if len(tables_list) >= 3 else tables_list
                 )
                 
+                exclude_sample_data = st.checkbox(
+                    "Privacy Mode: Exclude actual data rows from LLM context",
+                    value=False,
+                    help="When enabled, no sample rows will be queried from the database or sent to Gemini. Gemini will only receive database structural details (column names, types, keys)."
+                )
+                
                 analyze_clicked = st.button("Analyze Schema & Sample Data", type="secondary", disabled=not selected_tables)
                 
                 if analyze_clicked:
@@ -205,7 +211,7 @@ with col_upload:
                             # 1. Fetch schemas and sample rows
                             schema_samples = []
                             for t_name in selected_tables:
-                                sample_data = writer.get_table_schema_and_sample(t_name)
+                                sample_data = writer.get_table_schema_and_sample(t_name, include_samples=not exclude_sample_data)
                                 schema_samples.append(sample_data)
                             
                             st.session_state.db_schema_samples = schema_samples
@@ -382,17 +388,31 @@ if st.session_state.generated_questions:
                     table=profiling_table,
                 )
                 writer = SqlServerWriter(cfg)
-                rows, cols, err = writer.execute_query(q.sql_query, limit=100)
-                if err:
-                    st.error(f"Execution failed: {err}")
-                elif cols is not None:
-                    if rows:
-                        import pandas as pd
-                        df = pd.DataFrame(rows, columns=cols)
-                        st.dataframe(df, use_container_width=True)
-                        st.caption(f"Showing first {len(rows)} row(s).")
-                    else:
-                        st.info("0 rows returned")
+                
+                # Verify that query contains only read operations to preserve data integrity
+                is_safe = True
+                forbidden_keywords = ["insert", "update", "delete", "drop", "alter", "truncate", "create", "execute", "exec", "into"]
+                clean_query = q.sql_query.lower()
+                import re
+                for word in forbidden_keywords:
+                    if re.search(rf"\b{word}\b", clean_query):
+                        is_safe = False
+                        break
+                
+                if not is_safe:
+                    st.warning("⚠️ Security Guard: Query contains modify keywords (e.g. INSERT, UPDATE, DELETE, etc.) and was blocked from automatic execution.")
+                else:
+                    rows, cols, err = writer.execute_query(q.sql_query, limit=100)
+                    if err:
+                        st.error(f"Execution failed: {err}")
+                    elif cols is not None:
+                        if rows:
+                            import pandas as pd
+                            df = pd.DataFrame(rows, columns=cols)
+                            st.dataframe(df, use_container_width=True)
+                            st.caption(f"Showing first {len(rows)} row(s).")
+                        else:
+                            st.info("0 rows returned")
 
 if save_clicked and st.session_state.generated_questions:
     if not sql_database:

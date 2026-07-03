@@ -67,7 +67,7 @@ with st.sidebar:
         default_max = int(os.getenv("GEMINI_MAX_TOKENS", "2048"))
     except Exception:
         default_max = 2048
-    max_tokens = st.slider("Max tokens", min_value=64, max_value=8192, value=default_max, step=64)
+    max_tokens = st.slider("Max tokens", min_value=64, max_value=50000, value=default_max, step=256)
     
     # Store in environment
     os.environ["GEMINI_MODEL"] = model

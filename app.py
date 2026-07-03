@@ -392,7 +392,7 @@ if st.session_state.generated_questions:
                         st.dataframe(df, use_container_width=True)
                         st.caption(f"Showing first {len(rows)} row(s).")
                     else:
-                        st.info("Query returned 0 rows (no data quality issues detected).")
+                        st.info("0 rows returned")
 
 if save_clicked and st.session_state.generated_questions:
     if not sql_database:

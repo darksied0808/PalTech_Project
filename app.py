@@ -15,8 +15,8 @@ load_dotenv(ROOT / ".env")
 from src.markdown_parser import parse_markdown_spec, _split_bullets, ParsedDatabaseSpec
 from src.profiler import GenerationConfig, generate_profiling_questions, infer_rules_and_edge_cases
 from src.profiling_types import profiling_type_choices
-from src.sql_server import SqlServerConfig, SqlServerWriter
-from src.llm import check_model_available
+from src.sql_server import SqlServerConfig, SqlServerWriter, is_query_safe
+from src.llm import check_model_available, chat_text
 
 st.set_page_config(
     page_title="Data Profiler",
@@ -152,11 +152,18 @@ if "db_tables" not in st.session_state:
     st.session_state.db_tables = []
 if "db_columns" not in st.session_state:
     st.session_state.db_columns = []
+if "current_spec" not in st.session_state:
+    st.session_state.current_spec = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-edited_rules = []
-edited_edge_cases = []
+tab_generator, tab_assistant = st.tabs(["📋 Profiling Question Generator", "💬 Conversational Assistant"])
 
-col_upload, col_types = st.columns([2, 1])
+with tab_generator:
+    edited_rules = []
+    edited_edge_cases = []
+    
+    col_upload, col_types = st.columns([2, 1])
 
 with col_upload:
     st.subheader("1. Schema & Rules Source")
@@ -254,6 +261,15 @@ with col_upload:
                                 )
                                 st.session_state.db_inferred_rules = inferred_rules
                                 st.session_state.db_inferred_edge_cases = inferred_edge_cases
+                                
+                                st.session_state.current_spec = ParsedDatabaseSpec(
+                                    raw_content="",
+                                    schema_sections=[st.session_state.db_schema_markdown],
+                                    business_rules=inferred_rules,
+                                    edge_cases=inferred_edge_cases,
+                                    tables=tables_found,
+                                    columns=columns_found
+                                )
                                 st.success("Inferred business rules and edge cases from live data successfully!")
                         except Exception as e:
                             st.error(f"Failed to analyze tables: {e}")
@@ -293,6 +309,7 @@ with col_upload:
         if markdown_content:
             with st.expander("Preview markdown", expanded=False):
                 st.markdown(markdown_content[:4000] + ("..." if len(markdown_content) > 4000 else ""))
+            st.session_state.current_spec = parse_markdown_spec(markdown_content)
 
 with col_types:
     st.subheader("2. Choose profiling types")
@@ -414,24 +431,145 @@ if st.session_state.generated_questions:
                         else:
                             st.info("0 rows returned")
 
-if save_clicked and st.session_state.generated_questions:
-    if not sql_database:
-        st.error("Set a target database in the sidebar before saving.")
+    if save_clicked and st.session_state.generated_questions:
+        if not sql_database:
+            st.error("Set a target database in the sidebar before saving.")
+        else:
+            cfg = SqlServerConfig(
+                server=sql_server,
+                database=sql_database,
+                driver=sql_driver,
+                username=sql_username or None,
+                password=sql_password or None,
+                table=profiling_table,
+            )
+            writer = SqlServerWriter(cfg)
+            session_id = f"data-profiler-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+            try:
+                writer.ensure_table()
+                count = writer.insert_questions(st.session_state.generated_questions, source_session=session_id)
+                st.success(f"Inserted {count} rows into {profiling_table} (session: {session_id}).")
+                st.info("Open SSMS and run: SELECT * FROM " + profiling_table + " ORDER BY Id DESC")
+            except Exception as exc:
+                st.error(f"Save failed: {exc}")
+
+with tab_assistant:
+    st.subheader("💬 Conversational Data Profiling Assistant")
+    st.caption("Ask questions about your database schema, business rules, anomalies, or profiling queries.")
+    
+    if not st.session_state.current_spec:
+        st.info("Please load or analyze a database specification in the first tab to start using the assistant.")
     else:
-        cfg = SqlServerConfig(
-            server=sql_server,
-            database=sql_database,
-            driver=sql_driver,
-            username=sql_username or None,
-            password=sql_password or None,
-            table=profiling_table,
+        # We have a spec! Let's display the chatbot.
+        
+        # 1. Option to select an active profiling question
+        selected_q = None
+        if st.session_state.generated_questions:
+            q_options = ["None (General Schema Context)"] + [f"{i+1}. {q.profiling_type}: {q.question}" for i, q in enumerate(st.session_state.generated_questions)]
+            selected_q_idx_str = st.selectbox("Select a profiling question context (optional):", options=q_options, index=0)
+            if selected_q_idx_str != "None (General Schema Context)":
+                idx = int(selected_q_idx_str.split(".")[0]) - 1
+                selected_q = st.session_state.generated_questions[idx]
+        
+        # 2. Option to input anomaly details or sample row
+        anomaly_details = st.text_area(
+            "Provide anomaly details or a sample row (optional):",
+            placeholder="e.g. Email: 'john..doe@domain', Status: 'active', CountryCode: 'XYZ'",
+            help="Providing the actual data that triggered the query allows the assistant to explain exactly which business rules or schema constraints were violated.",
+            height=80
         )
-        writer = SqlServerWriter(cfg)
-        session_id = f"data-profiler-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
-        try:
-            writer.ensure_table()
-            count = writer.insert_questions(st.session_state.generated_questions, source_session=session_id)
-            st.success(f"Inserted {count} rows into {profiling_table} (session: {session_id}).")
-            st.info("Open SSMS and run: SELECT * FROM " + profiling_table + " ORDER BY Id DESC")
-        except Exception as exc:
-            st.error(f"Save failed: {exc}")
+        
+        # Helper to send prompt to LLM
+        def ask_assistant(user_message_text):
+            from src.markdown_parser import build_context_for_llm
+            spec_context = build_context_for_llm(st.session_state.current_spec, [])
+            
+            active_q_context = ""
+            if selected_q:
+                active_q_context = f"""
+### Active Profiling Question Context:
+- **Type**: {selected_q.profiling_type}
+- **Question**: {selected_q.question}
+- **SQL Query**:
+```sql
+{selected_q.sql_query}
+```
+- **Rationale**: {selected_q.rationale}
+- **Target Table**: {selected_q.target_table}
+- **Target Column**: {selected_q.target_column}
+"""
+            
+            anomaly_context = ""
+            if anomaly_details:
+                anomaly_context = f"\n### Anomaly / Sample Row Details:\n{anomaly_details}\n"
+                
+            system_instruction = """You are a senior data quality engineer and assistant.
+You help users analyze their database, understand profiling queries, explain anomalies, and suggest new profiling questions.
+
+Guidelines:
+- Explain SQL queries clearly, breaking down joins, filters, and aggregations.
+- For anomalies, inspect the schema, business rules, and constraints. Tell the user exactly why the provided anomaly or row is invalid (e.g. which rule it breaks, format mismatch).
+- For suggestions, propose new profiling ideas with sample T-SQL queries that use table/column names from the schema.
+- Keep responses clean, formatted in beautiful Markdown, and technical but easy to understand."""
+
+            full_user_prompt = f"""Database Schema & Business Rules Spec:
+{spec_context}
+{active_q_context}
+{anomaly_context}
+---
+User Question: {user_message_text}
+"""
+            with st.spinner("Assistant is thinking..."):
+                try:
+                    response_text = chat_text(
+                        system_prompt=system_instruction,
+                        user_prompt=full_user_prompt,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
+                    return response_text
+                except Exception as e:
+                    return f"Error communicating with Gemini API: {e}"
+
+        # 3. Quick action buttons
+        st.write("**Quick Actions:**")
+        q_col1, q_col2, q_col3, q_col4 = st.columns(4)
+        
+        quick_query = None
+        
+        if q_col1.button("Why was this anomaly flagged?", disabled=not selected_q, use_container_width=True, key="btn_why_flagged"):
+            quick_query = "Why was this anomaly flagged?"
+        if q_col2.button("Explain this SQL.", disabled=not selected_q, use_container_width=True, key="btn_explain_sql"):
+            quick_query = "Explain this SQL."
+        if q_col3.button("Suggest another profiling question.", use_container_width=True, key="btn_suggest_q"):
+            if selected_q and selected_q.target_table:
+                quick_query = f"Suggest another profiling question for the table '{selected_q.target_table}'."
+            else:
+                quick_query = "Suggest another profiling question."
+        if q_col4.button("Show similar queries.", disabled=not selected_q, use_container_width=True, key="btn_similar_q"):
+            quick_query = "Show similar queries to the active query."
+
+        # Process chat input or quick queries
+        chat_input = st.chat_input("Ask a question about the schema, SQL, or anomalies...")
+        
+        user_msg = quick_query or chat_input
+        
+        if user_msg:
+            st.session_state.chat_history.append({"role": "user", "content": user_msg})
+            assistant_resp = ask_assistant(user_msg)
+            st.session_state.chat_history.append({"role": "assistant", "content": assistant_resp})
+            st.rerun()
+
+        # Render chat history
+        st.divider()
+        if st.session_state.chat_history:
+            if st.button("Clear Chat", key="btn_clear_chat"):
+                st.session_state.chat_history = []
+                st.rerun()
+                
+            for msg in st.session_state.chat_history:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+        else:
+            st.info("Ask a question or select a quick action above to start the conversation.")

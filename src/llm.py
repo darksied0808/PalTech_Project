@@ -19,3 +19,19 @@ def chat_json(
         temperature=temperature,
         max_tokens=max_tokens,
     )
+
+
+def chat_text(
+    system_prompt: str,
+    user_prompt: str,
+    model: str | None = None,
+    temperature: float = 0.2,
+    max_tokens: int | None = None,
+) -> str:
+    return gemini_client.chat_text(
+        system_prompt,
+        user_prompt,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )

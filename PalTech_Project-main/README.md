@@ -1,1 +1,0 @@
-# PalTech_Project

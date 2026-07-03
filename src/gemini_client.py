@@ -82,3 +82,32 @@ def chat_json(
         raise RuntimeError(f"Gemini chat failed: {exc}\n{tb}")
 
     return _parse_json_response(content)
+
+
+def chat_text(
+    system_prompt: str,
+    user_prompt: str,
+    model: str | None = None,
+    temperature: float = 0.2,
+    max_tokens: int | None = None,
+) -> str:
+    model = model or DEFAULT_MODEL
+    client = get_client()
+
+    config_kwargs: dict = {
+        "system_instruction": system_prompt,
+        "temperature": float(temperature),
+    }
+    if max_tokens:
+        config_kwargs["max_output_tokens"] = int(max_tokens)
+
+    try:
+        resp = client.models.generate_content(
+            model=model,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(**config_kwargs),
+        )
+        return resp.text or ""
+    except Exception as exc:
+        tb = traceback.format_exc()
+        raise RuntimeError(f"Gemini chat failed: {exc}\n{tb}")

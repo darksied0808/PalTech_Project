@@ -312,3 +312,43 @@ class SqlServerWriter:
         finally:
             if conn:
                 conn.close()
+
+    def execute_custom_query(self, query: str) -> tuple[list[str], list[list]]:
+        conn = pyodbc.connect(self.config.connection_string())
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            
+            columns = [col_desc[0] for col_desc in cursor.description] if cursor.description else []
+            rows = cursor.fetchall()
+            
+            import decimal
+            from datetime import datetime, date
+            data_rows = []
+            for row in rows:
+                row_list = []
+                for val in row:
+                    if val is None:
+                        row_list.append(None)
+                    elif isinstance(val, (int, float, str, bool)):
+                        row_list.append(val)
+                    elif isinstance(val, (datetime, date)):
+                        row_list.append(val.isoformat())
+                    elif isinstance(val, decimal.Decimal):
+                        row_list.append(float(val))
+                    else:
+                        row_list.append(str(val))
+                data_rows.append(row_list)
+            return columns, data_rows
+        finally:
+            conn.close()
+
+
+def is_query_safe(query: str) -> tuple[bool, str | None]:
+    import re
+    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "EXECUTE", "INTO"]
+    pattern = r"\b(" + "|".join(forbidden) + r")\b"
+    match = re.search(pattern, query, re.IGNORECASE)
+    if match:
+        return False, match.group(1)
+    return True, None
